@@ -1,0 +1,118 @@
+service:
+  name: sns-to-multiple-sqs-demo
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "sqs:SendMessage"
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "sns:*"
+      Resource: "*"
+
+package:
+  individually: false
+
+functions:
+  writer:
+    handler: event-writer/src/writer.handler
+    environment:
+      ACCOUNT_ID: ${aws:accountId}
+    events:
+      - httpApi:
+          path: /events
+          method: post
+  event-consumer-one:
+    handler: consumer/src/consumer.handler
+    events:
+      - sqs:
+          arn: arn:aws:sqs:us-east-1:${aws:accountId}:consumer1.fifo
+          batchSize: 1
+  event-consumer-two:
+    handler: consumer/src/consumer.handler
+    events:
+      - sqs:
+          arn: arn:aws:sqs:us-east-1:${aws:accountId}:consumer2.fifo
+          batchSize: 1
+
+resources:
+  Resources:
+    # Define the SQS queue
+    ConsumerOneQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: consumer1.fifo
+        FifoQueue: true
+    ConsumerTwoQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: consumer2.fifo
+        FifoQueue: true
+
+    # Define the SNS topic
+    SharedSnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        FifoTopic: true
+        TopicName: sharedsns.fifo
+
+    # Policy allows SNS to publish to this SQS queue
+    SnsToSqsPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "Allow SNS publish to SQS"
+              Effect: Allow
+              Principal: 
+                Service: "sns.amazonaws.com"
+              Resource: !GetAtt ConsumerOneQueue.Arn
+              Action: SQS:SendMessage
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SharedSnsTopic
+            - Sid: "Allow SNS publish to SQS Queue 2"
+              Effect: Allow
+              Principal: 
+                Service: "sns.amazonaws.com"
+              Resource: !GetAtt ConsumerTwoQueue.Arn
+              Action: SQS:SendMessage
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SharedSnsTopic
+        # The All your queues set up for a single Topic
+        Queues:
+          - Ref: ConsumerOneQueue
+          - Ref: ConsumerTwoQueue
+
+      # Subscription that can recieve Blue or Yellow filter
+    
+    BlueYellowQueueSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint: !GetAtt ConsumerTwoQueue.Arn
+        Protocol: sqs
+        FilterPolicy:
+          color:
+            - blue
+            - yellow
+        RawMessageDelivery: True
+        TopicArn: !Ref SharedSnsTopic
+    # Subscription that can recieve Blue or Yellow filter
+    GreenQueueSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint: !GetAtt ConsumerOneQueue.Arn
+        Protocol: sqs
+        FilterPolicy:
+          color:
+            - green
+        RawMessageDelivery: True
+        TopicArn: !Ref SharedSnsTopic
